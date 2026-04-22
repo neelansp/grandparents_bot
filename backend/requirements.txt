@@ -5,4 +5,3 @@ pydantic==2.5.0
 python-dotenv==1.0.0
 httpx==0.25.1
 apscheduler==3.10.4
-cryptography==46.0.5

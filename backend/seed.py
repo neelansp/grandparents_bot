@@ -1,10 +1,12 @@
-"""Seed Upace accounts from environment variables on startup.
-
-Reads PASSWORD + SEED_UPACE_EMAILS (or EMAIL_1/EMAIL_2) from `backend/.env`,
-logs each one into Upace, and stores the resulting api_key / user_login_key
-encrypted in the Account table. Safe to re-run — existing rows are updated
-in place rather than duplicated.
-"""
+# This file runs once at startup and fills the "accounts" table with the
+# grandparents' Upace logins, read from the .env file.
+#
+# Set these variables in backend/.env:
+#   PASSWORD=shared_upace_password
+#   SEED_UPACE_EMAILS=grandma@example.com,grandpa@example.com
+#
+# Running this twice is safe — if an account already exists, we update it
+# instead of creating a duplicate.
 
 import os
 import uuid
@@ -12,45 +14,27 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from models import Account, SessionLocal
-from security import encrypt_secret, hash_password
-from services.upace_client import UpaceClient
+from database import Account, SessionLocal
+from upace import UpaceClient
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
-DEFAULT_ENV_FILES = [
-    BACKEND_DIR / ".env",
-    BACKEND_DIR.parent / "starter" / ".env",
-]
+load_dotenv(BACKEND_DIR / ".env", override=False)
 
 
-for env_file in DEFAULT_ENV_FILES:
-    if env_file.exists():
-        load_dotenv(env_file, override=False)
-
-
-def _load_seed_accounts() -> tuple[list[str], str | None, str]:
-    password = os.getenv("PASSWORD")
-    uid = os.getenv("UID", "110")
-
-    emails_value = os.getenv("SEED_UPACE_EMAILS")
-    if emails_value:
-        emails = [email.strip() for email in emails_value.split(",") if email.strip()]
-        return emails, password, uid
-
-    emails = [
-        os.getenv("EMAIL_1", "").strip(),
-        os.getenv("EMAIL_2", "").strip(),
-    ]
-    return [email for email in emails if email], password, uid
+def read_seed_emails_from_env():
+    """Read the list of emails from SEED_UPACE_EMAILS in .env."""
+    value = os.getenv("SEED_UPACE_EMAILS", "")
+    return [email.strip() for email in value.split(",") if email.strip()]
 
 
 def seed_accounts():
-    """Seed Upace-backed accounts from environment variables."""
+    """Create or update an Account row for every email in .env."""
+    password = os.getenv("PASSWORD")
+    emails = read_seed_emails_from_env()
 
-    emails, password, uid = _load_seed_accounts()
-    if not emails or not password:
-        print("Skipping seed: set PASSWORD and SEED_UPACE_EMAILS or EMAIL_1/EMAIL_2")
+    if not password or not emails:
+        print("Skipping seed: set PASSWORD and SEED_UPACE_EMAILS in backend/.env")
         return
 
     db = SessionLocal()
@@ -58,45 +42,44 @@ def seed_accounts():
 
     try:
         for email in emails:
-            check_response = upace.check_user(email, uid)
-            if check_response.get("error") not in (None, 0) and "function" not in check_response:
-                print(f"Skipping {email}: unable to start Upace login")
+            # Step 1: ask Upace for this user's login key.
+            check = upace.check_user(email)
+            if check.get("error") not in (None, 0) and "function" not in check:
+                print(f"Skipping {email}: could not start Upace login")
                 continue
 
-            user_login_key = check_response.get("user_login_key")
+            user_login_key = check.get("user_login_key")
             if not user_login_key:
                 print(f"Skipping {email}: missing user_login_key")
                 continue
 
-            login_response = upace.login_user(user_login_key, password, uid)
-            if login_response.get("error") not in (None, 0):
-                print(f"Skipping {email}: {login_response.get('message')}")
+            # Step 2: log in with the password.
+            login = upace.login_user(user_login_key, password)
+            if login.get("error") not in (None, 0):
+                print(f"Skipping {email}: {login.get('message')}")
                 continue
 
+            # If this account already exists in the DB, update it.
             existing = db.query(Account).filter(Account.email == email).first()
             if existing:
-                existing.name = login_response.get("user_name") or existing.name
-                existing.password_hash = hash_password(password)
-                existing.upace_password_encrypted = encrypt_secret(password)
-                existing.api_key_encrypted = encrypt_secret(login_response.get("api_key"))
-                existing.user_login_key_encrypted = encrypt_secret(user_login_key)
-                existing.barcode_encrypted = encrypt_secret(login_response.get("barcode"))
-                db.commit()
-                continue
-
-            db.add(
-                Account(
+                existing.name = login.get("user_name") or existing.name
+                existing.upace_password = password
+                existing.api_key = login.get("api_key")
+                existing.user_login_key = user_login_key
+                existing.barcode = login.get("barcode")
+            else:
+                db.add(Account(
                     id=str(uuid.uuid4()),
-                    name=login_response.get("user_name") or email,
+                    name=login.get("user_name") or email,
                     email=email,
-                    password_hash=hash_password(password),
-                    upace_password_encrypted=encrypt_secret(password),
-                    api_key_encrypted=encrypt_secret(login_response.get("api_key")),
-                    user_login_key_encrypted=encrypt_secret(user_login_key),
-                    barcode_encrypted=encrypt_secret(login_response.get("barcode")),
-                )
-            )
+                    upace_password=password,
+                    api_key=login.get("api_key"),
+                    user_login_key=user_login_key,
+                    barcode=login.get("barcode"),
+                ))
+
             db.commit()
+            print(f"Seeded account: {email}")
     finally:
         upace.close()
         db.close()

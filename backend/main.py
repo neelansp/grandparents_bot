@@ -1,11 +1,11 @@
-"""FastAPI application entry point.
-
-Wires together the routers (accounts, classes), starts the background
-scheduler that auto-books selections at T-5 days, and seeds the Upace
-accounts from environment variables on startup.
-
-Run locally with `python main.py` (uvicorn wraps the app).
-"""
+# This is the entry point for the backend. It:
+#   1. Loads environment variables from backend/.env
+#   2. Creates the database tables (if they don't exist yet)
+#   3. Seeds the accounts table from the emails in .env
+#   4. Starts the auto-booking background scheduler
+#   5. Mounts the HTTP routes
+#
+# Run locally with:  python main.py
 
 import logging
 import os
@@ -15,62 +15,54 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from jobs.scheduler import start_scheduler
-from routes.accounts import router as accounts_router
-from routes.classes import router as classes_router
-from seed import seed_accounts
-
 
 BACKEND_DIR = Path(__file__).resolve().parent
 load_dotenv(BACKEND_DIR / ".env", override=False)
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def _parse_cors_origins() -> list[str]:
-    origins_value = os.getenv(
-        "CORS_ORIGINS",
-        "http://localhost:3000,http://localhost:5173",
-    )
-    return [origin.strip() for origin in origins_value.split(",") if origin.strip()]
+# Import AFTER load_dotenv so env-var-driven modules see the values.
+from database import create_tables
+from routes.accounts import router as accounts_router
+from routes.classes import router as classes_router
+from scheduler import start_scheduler
+from seed import seed_accounts
 
 
-def _should_auto_seed() -> bool:
-    return os.getenv("AUTO_SEED_ACCOUNTS", "true").lower() in {"1", "true", "yes", "on"}
+app = FastAPI(title="Grandparents Workout Class Bot")
 
 
-def _should_reload() -> bool:
-    return os.getenv("UVICORN_RELOAD", "true").lower() in {"1", "true", "yes", "on"}
-
-
-app = FastAPI(title="Grandparents Workout Class Bot API", version="1.0.0")
+# The frontend runs on a different port, so the browser blocks API calls
+# by default. CORS tells the browser "it's OK, let these origins through."
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_parse_cors_origins(),
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 app.include_router(accounts_router)
 app.include_router(classes_router)
 
 
 @app.on_event("startup")
-def startup_event():
-    logger.info("Starting application...")
+def on_startup():
+    logger.info("Starting up...")
+    create_tables()
 
-    if _should_auto_seed():
-        try:
-            logger.info("Seeding Upace accounts from environment...")
-            seed_accounts()
-        except Exception as exc:
-            logger.error("Error seeding Upace accounts: %s", exc)
-    else:
-        logger.info("AUTO_SEED_ACCOUNTS disabled; skipping seed step")
+    try:
+        seed_accounts()
+    except Exception as exc:
+        logger.error("Seeding accounts failed: %s", exc)
 
     start_scheduler()
 
@@ -92,5 +84,5 @@ if __name__ == "__main__":
         "main:app",
         host=os.getenv("UVICORN_HOST", "0.0.0.0"),
         port=int(os.getenv("UVICORN_PORT", "8000")),
-        reload=_should_reload(),
+        reload=True,
     )
