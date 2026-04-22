@@ -321,9 +321,27 @@ export function ClassProvider({ children }: { children: ReactNode }) {
       setError(null);
       try {
         const response = await bookClasses(accountId, selectionIds);
+
         // Refresh the selected list so their status (booked/failed) shows up.
-        const refreshed = await getSelectedClasses(accountId);
-        setSelectedClasses((prev) => replaceSelectionsForAccount(prev, accountId, refreshed));
+        const refreshedSelections = await getSelectedClasses(accountId);
+        setSelectedClasses((prev) =>
+          replaceSelectionsForAccount(prev, accountId, refreshedSelections)
+        );
+
+        // Refresh the booked list too so newly booked classes appear in
+        // the "Booked" table on the review page.
+        const bookedResponse = await getBookedClasses(accountId);
+        const refreshedBookings = (bookedResponse.bookings || []).map(
+          (item: Omit<BookedClassType, "account_id">) => ({
+            ...item,
+            account_id: accountId,
+          })
+        ) as BookedClassType[];
+        setBookedClasses((prev) => {
+          const others = prev.filter((item) => item.account_id !== accountId);
+          return [...others, ...refreshedBookings];
+        });
+
         return (response.bookings || []) as BookingResult[];
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to reserve classes";

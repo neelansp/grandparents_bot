@@ -181,8 +181,19 @@ function ReviewPageContent() {
     }
 
     const accountIds = authenticatedAccounts.map((account) => account.id);
+
+    // Load immediately on open, then poll every 15 seconds. This is how
+    // the page picks up auto-bookings from the backend scheduler without
+    // the user having to refresh the browser.
     fetchSelectedClassesForAccounts(accountIds);
     fetchBookedClassesForAccounts(accountIds);
+
+    const intervalId = window.setInterval(() => {
+      fetchSelectedClassesForAccounts(accountIds);
+      fetchBookedClassesForAccounts(accountIds);
+    }, 15000);
+
+    return () => window.clearInterval(intervalId);
   }, [authenticatedAccounts, fetchSelectedClassesForAccounts, fetchBookedClassesForAccounts]);
 
   const pendingSelections = useMemo(
