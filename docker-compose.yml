@@ -1,0 +1,37 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: sqlite:////app/data/grandparents_bot.db
+      APP_SECRET_KEY_FILE: /app/data/.app_secret_key
+      AUTO_LOGIN_ACCOUNTS: "true"
+      UVICORN_HOST: 0.0.0.0
+      UVICORN_PORT: 8000
+      UVICORN_RELOAD: "false"
+    expose:
+      - "8000"
+    restart: unless-stopped
+    volumes:
+      - ./backend/data:/app/data
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: /api
+        NEXT_PUBLIC_AUTO_LOGIN_ACCOUNTS: "true"
+        BACKEND_INTERNAL_URL: http://backend:8000
+    environment:
+      NEXT_PUBLIC_API_URL: /api
+      NEXT_PUBLIC_AUTO_LOGIN_ACCOUNTS: "true"
+      BACKEND_INTERNAL_URL: http://backend:8000
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
